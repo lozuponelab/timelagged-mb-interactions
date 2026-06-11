@@ -1,0 +1,160 @@
+---
+title: "lag_regress_permutation_checks"
+author: "Laurie Lyon"
+date: "2025-09-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse) 
+library(ape)
+library(rstatix)
+library(ggpubr)
+library(ggbeeswarm)
+```
+
+Load in the docs I have from Casey of his significant pairwise interactions and my most up-to-date lagged regression output
+```{r}
+casey_sig_ints <- read.csv("../../interactions_taxonomy_files_to_merge/best_fit_organized_interactions.csv")
+#100k iterations at 90% prevalence cutoff
+#M01_all_ints <- read.csv("../results/lagged_regression/M01_updated_perm_queue_0709_100k_1.csv") 
+M01_all_ints <- read.csv("../results/lagged_regression/251003_M01_90pct_1000.csv") 
+#1000 iterations at 70% prevalence cutoff
+#M01_all_ints <- read.csv("../results/lagged_regression/M01_80pct_100_1.csv") 
+taxonomy <- read_tsv("/Users/laurielyon/Projects/mibi_longitude/data/qiime/taxonomy.tsv")
+colnames(M01_all_ints)
+```
+Merge with taxonomy
+```{r}
+# Convert the integer ID columns to character strings
+M01_all_ints$i <- as.character(M01_all_ints$i)
+M01_all_ints$j <- as.character(M01_all_ints$j)
+
+M01_all_ints <- M01_all_ints %>%
+  left_join(taxonomy, by = c("j" = "Feature ID")) %>% 
+  rename("Taxon_j" = "Taxon", "Confidence_j" = "Confidence") %>% 
+  left_join(taxonomy, by = c("i" = "Feature ID")) %>% 
+  rename("Taxon_i" = "Taxon", "Confidence_i" = "Confidence")
+```
+
+First want to grab all the sig ints
+```{r}
+
+M01_all_ints <- M01_all_ints %>%
+   mutate(interaction = case_when(spear_rho_real > 0 & pseudo_pval_iaaft_fdr < 0.05 ~ "Positive",
+                                  spear_rho_real < 0 & pseudo_pval_iaaft_fdr < 0.05 ~ "Negative",
+                                  .default = "None"))
+
+ M01_sig_ints <- M01_all_ints %>%
+   filter(pseudo_pval_iaaft_fdr < 0.05) %>%
+   select(c(j,
+            i,
+            spear_rho_real,
+            mean_rho_iaaft,
+            pseudo_pval_iaaft,
+            pseudo_pval_iaaft_fdr,
+            interaction,
+            Taxon_j,
+            Confidence_j,
+            Taxon_i,
+            Confidence_i))
+
+#checking with the shuffle method instead of iaaft
+# M01_all_ints <- M01_all_ints %>% 
+#   mutate(interaction = case_when(spear_rho_real > 0 & pseudo_pval_shuffled < 0.01 ~ "Positive", 
+#                                  spear_rho_real < 0 & pseudo_pval_shuffled < 0.01 ~ "Negative",
+#                                  .default = "None"))
+# 
+# M01_sig_ints <- M01_all_ints %>% 
+#   filter(pseudo_pval_shuffled < 0.01) %>% 
+#   select(c(j, 
+#            i, 
+#            spear_rho_real, 
+#            mean_rho_iaaft, 
+#            pseudo_pval_shuffled, 
+#            pseudo_pval_shuffled_fdr, 
+#            interaction, 
+#            Taxon_j, 
+#            Confidence_j, 
+#            Taxon_i, 
+#            Confidence_i))
+
+M01_sig_pos <- M01_sig_ints %>% 
+  filter(interaction == "Positive")
+
+M01_sig_neg <- M01_sig_ints %>% 
+  filter(interaction == "Negative")
+```
+
+Compute distance between OTUi and OTUj from SILVA-based SEPP tree
+```{r}
+#load in my sepp tree
+pruned_sepp_tree <- read.tree("/Users/laurielyon/Projects/mibi_longitude/results/allsubj_50pctprev_pruned_tree.nwk")
+dist_matrix <- cophenetic.phylo(pruned_sepp_tree)
+
+valid_otu_ids <- rownames(dist_matrix)
+# get distance from distance matrix 
+# takes i, j, and matrix m
+# find column i row j in matrix m 
+get_dist <- function(i, j, matrix) matrix[i,j]
+
+#apply function to get phylogenetic distances for all i_j_pairs
+M01_all_ints$i_j_dist <- mapply(
+  get_dist, 
+  M01_all_ints$i,
+  M01_all_ints$j,
+  MoreArgs = list(matrix = dist_matrix)
+)
+
+```
+
+*Stats*
+
+```{r}
+#with rstatix
+stats_df <- M01_all_ints %>%
+  #pairwise wilcox rank test (nonparametric t-test)
+  wilcox_test(i_j_dist ~ interaction) %>%
+  #adjust for multiple tests by benjamini hochberg
+  adjust_pvalue(method = "BH") %>%
+  #add the column for significance stars
+  add_significance("p.adj") 
+```
+
+
+*Plot*
+```{r, fig.width = 4, fig.height= 4}
+(int_phylo_dist_plot <- M01_all_ints %>% 
+   ggplot(aes(x = interaction, y = i_j_dist)) +
+   #geom_violin() + 
+   geom_boxplot() +
+   geom_quasirandom(alpha = 0.3) +
+   theme_bw() +
+   labs(title = "Phylogenetic Distance by Interaction Type", 
+        x = "Interaction Type", 
+        y= "Phylogenetic Distance Between OTUj and OTUi") +
+   stat_pvalue_manual(stats_df,
+                      label = "p.adj.signif", 
+                      tip.length = 0.01, 
+                      label.size = 4,
+                      y.position = c(3.2, 3.5, 3.8))
+ )
+```
+save plot
+```{r}
+ggsave(filename = "20250925_interaction_phylodist_plot.png", 
+       plot=int_phylo_dist_plot,
+       path = "/Users/laurielyon/Projects/bangladesh_tlc_organized/plots", 
+       width = 4, 
+       height = 4)
+```
+
+```{r}
+write.csv(M01_all_ints, file = "../data/20250925_M01_all_interactions_90pct_1000.csv")
+write.csv(M01_sig_ints, file = "../data/20250925_M01_significant_interactions_90pct.csv")
+```
+

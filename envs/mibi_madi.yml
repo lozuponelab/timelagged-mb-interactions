@@ -1,0 +1,17 @@
+name: mibi_madi
+channels: 
+  - bioconda
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python>=3.12
+  - pandas
+  - tqdm
+  - scipy
+  - scikit-bio
+  - scikit-learn
+  - pip
+  - pip: 
+      - snakemake
+      - argparse
+      - sktime

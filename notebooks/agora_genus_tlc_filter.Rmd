@@ -1,0 +1,138 @@
+---
+title: ""
+author: "Laurie Lyon"
+date: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse) 
+library(ape)
+library(rstatix)
+library(ggpubr)
+library(ggbeeswarm)
+```
+Read in files 
+```{r}
+all_ints <- read.csv("../data/20250925_M01_all_interactions_90pct_1000.csv")
+agora2_genus_fp <- "~/Projects/micom-time-series/data/models/agora201_refseq216_genus_1/a4ce3649-c8b8-4893-8bd2-4886aa1f40e8/data/"
+```
+
+Generate list of all genera (removing .json from each file in teh AGORA2 genus reference database)
+```{r}
+agora2_filename_list <- list.files(agora2_genus_fp)
+
+clean_genus_list <- c()
+
+for (genus in unlist(agora2_filename_list)) {
+  genus_only <- gsub(x = genus, pattern = ".json", replacement = "")
+  clean_genus_list <- append(clean_genus_list, genus_only)
+}
+```
+
+Create a genus_j and genus_i column to be matched with cleaned AGORA2 genus names
+```{r}
+#use regex to remove everything before the genus name from the taxonomy
+#and everything after the genus name (;s__)
+genus_filtered <- all_ints %>% 
+  mutate(Genus_j = str_extract(Taxon_j, "(?<=g__).*"),
+         Genus_j = str_extract(Genus_j, ".*?(?=;s__)"), 
+         Genus_i = str_extract(Taxon_i, "(?<=g__).*"),
+         Genus_i = str_extract(Genus_i, ".*?(?=;s__)") 
+  ) %>% 
+  #filter out NAs (no genus level taxonomy)
+  filter(!is.na(Genus_j), !is.na(Genus_i))
+
+#filter for pairs where both genera are found in the AGORA database
+AGORA_filtered <- genus_filtered %>% 
+  #making column with 'present' if that genus list is in the AGORA cleaned genus list
+  #or absent if it is not found
+  mutate(AGORA_j = ifelse(Genus_j %in% clean_genus_list, 'present', 'absent'),
+         AGORA_i = ifelse(Genus_i %in% clean_genus_list, 'present', 'absent')
+  ) %>% 
+  #filter for pairs where both are present 
+  filter(AGORA_j == 'present' & AGORA_i == 'present',
+         #and when the genus of OTUj and OTUi aren't equal
+         Genus_j != Genus_i)
+
+#seeing what it looks like if we leave all the instances where Genusi = Genusj
+AGORA_filtered_w_ijmatch<- genus_filtered %>% 
+  #making column with 'present' if that genus list is in the AGORA cleaned genus list
+  #or absent if it is not found
+  mutate(AGORA_j = ifelse(Genus_j %in% clean_genus_list, 'present', 'absent'),
+         AGORA_i = ifelse(Genus_i %in% clean_genus_list, 'present', 'absent')
+  ) %>% 
+  #filter for pairs where both are present 
+  filter(AGORA_j == 'present' & AGORA_i == 'present')
+```
+
+*Stats*
+
+```{r}
+#with rstatix
+full_filter_stats_df <- AGORA_filtered %>%
+  #pairwise wilcox rank test (nonparametric t-test)
+  wilcox_test(i_j_dist ~ interaction) %>%
+  #adjust for multiple tests by benjamini hochberg
+  adjust_pvalue(method = "BH") %>%
+  #add the column for significance stars
+  add_significance("p.adj") 
+
+ijmatch_filter_stats_df <- AGORA_filtered %>%
+  #pairwise wilcox rank test (nonparametric t-test)
+  wilcox_test(i_j_dist ~ interaction) %>%
+  #adjust for multiple tests by benjamini hochberg
+  adjust_pvalue(method = "BH") %>%
+  #add the column for significance stars
+  add_significance("p.adj")
+```
+
+Plot code pasted from interactions_phylogeny but this time only on pairs within AGORA
+```{r, fig.width = 4, fig.height= 4}
+(agora_tlc_phylo_dist_plot <- AGORA_filtered %>% 
+   ggplot(aes(x = interaction, y = i_j_dist)) +
+   #geom_violin() + 
+   geom_boxplot() +
+   geom_quasirandom(alpha = 0.3) +
+   theme_bw() +
+   labs(title = "Phylogenetic Distance by Interaction Type", 
+        x = "Interaction Type", 
+        y= "Phylogenetic Distance Between OTUj and OTUi") +
+   stat_pvalue_manual(full_filter_stats_df,
+     label = "p.adj.signif",
+     tip.length = 0.01,
+     label.size = 4,
+     y.position = c(3.2, 3.5, 3.8))
+)
+
+(agora_tlc_phylo_dist_plot_ijmatch <- AGORA_filtered_w_ijmatch %>% 
+   ggplot(aes(x = interaction, y = i_j_dist)) +
+   #geom_violin() + 
+   geom_boxplot() +
+   geom_quasirandom(alpha = 0.3) +
+   theme_bw() +
+   labs(title = "Phylogenetic Distance by Interaction Type", 
+        x = "Interaction Type", 
+        y= "Phylogenetic Distance Between OTUj and OTUi") +
+   stat_pvalue_manual(ijmatch_filter_stats_df,
+     label = "p.adj.signif",
+     tip.length = 0.01,
+     label.size = 4,
+     y.position = c(3.2, 3.5, 3.8))
+)
+```
+
+There are multiple OTUs per genera, so I want to find the number of unique combinations of interaction type (+/-/NULL), Genus_j, and Genus_i)
+```{r}
+unique_genus_int_combos <- AGORA_filtered %>% 
+  select(interaction, Genus_j, Genus_i) %>% 
+  distinct()
+
+unique_genus_combos <- AGORA_filtered %>% 
+  select(Genus_j, Genus_i) %>% 
+  distinct()
+```

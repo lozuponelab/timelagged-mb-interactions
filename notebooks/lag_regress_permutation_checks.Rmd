@@ -1,0 +1,217 @@
+---
+title: "lag_regress_permutation_checks"
+author: "Laurie Lyon"
+date: "2025-06-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(cowplot) # to plot grid
+library(glue) # to format and interpolate a string
+library(lme4) # for linear modeling 
+library(tidyverse) 
+library(ggh4x) # ggplot2 extension, includes nested facets
+library(broom)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+```
+
+Load in the docs I have from Casey of his significant pairwise interactions and my current lagged regression outputs 
+```{r}
+casey_sig_ints <- read.csv("../../interactions_taxonomy_files_to_merge/best_fit_organized_interactions.csv")
+
+example_output <- read.csv("../results/lagged_regression/251003_M01_90pct_1000.csv")
+#example_output <- read.csv("../results/lagged_regression/M01_updated_perm_queue_0709_1M_1.csv")
+example_output1 <- read.csv("../results/lagged_regression/M01_updated_perm_queue_0709_100k_1.csv")
+#example_output_old <- read.csv("../results/lagged_regression/M01_perm_test_0618_short_100k_1.csv")
+
+```
+
+```{r}
+sum(example_output$pseudo_pval_shuffled_fdr <= 0.1)
+sum(example_output$pseudo_pval_shuffled < 0.05)
+sum(example_output$pseudo_pval_iaaft_fdr <= 0.05)
+sum(example_output$pseudo_pval_shuffled <= 0.1 & example_output$pseudo_pval_iaaft_fdr <= 0.1)
+sum(example_output$pseudo_pval_shuffled_fdr <= 0.1 & example_output$pseudo_pval_iaaft_fdr <= 0.1)
+```
+```{r}
+sum(example_output$pseudo_pval_iaaft_fdr <= 0.05)
+sum(example_output1$pseudo_pval_iaaft_fdr <= 0.05)
+sum(example_output$pseudo_pval_iaaft_fdr <= 0.05 & example_output1$pseudo_pval_iaaft_fdr <= 0.05)
+```
+```{r}
+supp_table <- read.csv("~/Downloads/Bangladesh_supplemental_table_1.csv")
+```
+
+```{r}
+#merge ones that Casey found to be significant vs. all of my outputs. Both OTU j and OTU i need to match
+inner_join_merged_df <- inner_join(casey_sig_ints, example_output, by = c("Feature_ID_j" = "j", "Feature_ID_i" = "i"))
+
+#checking which were found in casey's sig ints but not found in my output
+not_in_my_data <- anti_join(casey_sig_ints, example_output, by = c("Feature_ID_j" = "j", "Feature_ID_i" = "i"))
+#not in my data makes sense - all come from F01 or M02
+
+colnames(inner_join_merged_df)
+
+#selected_df <- inner_join_merged_df[, c("Feature_ID_j", "Feature_ID_i", "r_coef", "p.value", "r_obs", "p_time", "mean_time", "p_val", "mean_val", "p_amp", "mean_amp", "p_spec", "mean_spec", "p_time_fdr", "p_val_fdr", "p_amp_fdr", "p_spec_fdr", "p_time_reject", "p_val_reject", "p_amp_reject", "p_spec_reject")]
+
+#commented out 10-3-25 because I commented out shuffling to speed up lagregress script
+#selected_df <- inner_join_merged_df[, c("Feature_ID_j", "Feature_ID_i", "r_coef", "p.value", "spear_rho_real", "mean_rho_shuffled", "pseudo_pval_shuffled", "mean_rho_iaaft", "pseudo_pval_iaaft", "pseudo_pval_shuffled_fdr", "pseudo_pval_shuffled_signif", "pseudo_pval_iaaft_fdr", "pseudo_pval_iaaft_signif")]
+
+selected_df <- inner_join_merged_df[, c("Feature_ID_j", "Feature_ID_i", "r_coef", "p.value", "spear_rho_real", "mean_rho_iaaft", "pseudo_pval_iaaft", "pseudo_pval_iaaft_fdr", "pseudo_pval_iaaft_signif")]
+
+#selected_df$sig_p_time <- selected_df$p_time < 0.05
+#selected_df$sig_p_val <- selected_df$p_val < 0.05
+#selected_df$sig_p_amp <- selected_df$p_amp < 0.05
+#selected_df$sig_p_spec <- selected_df$p_spec < 0.05
+#selected_df$sig_p_spec_fdr <- selected_df$p_spec_fdr < 0.1
+#selected_df$sig_p_time_fdr <- selected_df$p_time_fdr < 0.1
+
+sum(selected_df$pseudo_pval_shuffled < 0.05)
+#sum(selected_df$p_time_reject == "True")
+sum(selected_df$pseudo_pval_iaaft < 0.05)
+#sum(selected_df$sig_p_spec)
+#sum(selected_df$p_spec_reject == "True")
+#sum(selected_df$sig_p_spec_fdr)
+
+```
+Scatter plots to look at differences between me and Casey's methods
+1) r_coef (Casey's output) vs. r_obs (my observed rho value) - would expect these to be very similar because I'm trying to do his lagged regression methodology exactly
+2) p_time p values (shuffle time, Casey's strategy) and p_spec p values (IAAFT where power spectrum of j is maintained and amplitude is approximated) - don't necessarily expect these to correlate well 
+
+```{r}
+model_rho <- lm(spear_rho_real ~ r_coef, data = selected_df)
+model_rho
+slope_rho <- coef(model_rho)[2]
+intercept_rho <- coef(model_rho)[1]
+
+ggplot(data = selected_df, aes(x = r_coef, y = spear_rho_real, color = pseudo_pval_iaaft_signif)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    x = "Casey's Spearman rho", 
+    y = "Laurie's Spearman rho", title = "Scatter plot of Casey's rho (r_coef) vs. my rho (spear_rho_real)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+
+ggplot(data = selected_df, aes(x = mean_spec, y = r_obs, color = sig_p_spec)) +
+  geom_point() +
+  #geom_smooth(method = "lm") +
+  labs(
+    x = "Mean permuted Spearman rho (IAAFT spec)", 
+    y = "Mean empirical Spearman Coefficient", 
+    title = "Empirical Spearman Coefficient vs. Mean Permuted Spearman Coefficient"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+#example_output$sig_p_time <- example_output$p_time < 0.05
+
+ggplot(data = example_output, aes(x = mean_rho_shuffled, y = spear_rho_real, color = pseudo_pval_shuffled_signif)) +
+  geom_point(size = 0.7) +
+  #geom_smooth(method = "lm") +
+  labs(
+    x = "Mean permuted Spearman rho (time-shuffle method)", 
+    y = "Mean empirical Spearman Coefficient", 
+    title = "Empirical Spearman Coefficient vs. Mean Permuted Spearman Coefficient"
+  ) +
+  theme_minimal()
+```
+```{r}
+#example_output$sig_p_spec <- example_output$p_spec < 0.05
+
+
+ggplot(data = example_output, aes(x = mean_rho_iaaft, y = spear_rho_real, color = pseudo_pval_iaaft_signif)) +
+  geom_point(size = 0.7) +
+  #geom_smooth(method = "lm") +
+  labs(
+    x = "Mean permuted Spearman rho (IAAFT power-spectrum-aware)", 
+    y = "Mean empirical Spearman Coefficient", 
+    title = "Empirical Spearman Coefficient vs. Mean Permuted Spearman Coefficient"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+
+ggplot(data = example_output, aes(x = mean_time, y = r_obs, color = sig_p_time)) +
+  geom_point() +
+  #geom_smooth(method = "lm") +
+  labs(
+    x = "Mean permuted Spearman rho (time-shuffle method)", 
+    y = "Mean empirical Spearman Coefficient", 
+    title = "Empirical Spearman Coefficient vs. Mean Permuted Spearman Coefficient"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(data = selected_df, aes(x = p.value, y = pseudo_pval_shuffled)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_cor(method = "spearman")
+  labs(
+    x = "Casey's p", 
+    y = "Laurie's p", title = "Scatter plot of Casey's p-value from time-shuffle null"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(data = selected_df, aes(x = pseudo_pval_shuffled, y = pseudo_pval_iaaft)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  stat_cor(method= "spearman") +
+  labs(
+    x = "p from time-shuffle null", 
+    y = "p from IAAFT spec nulll", title = "Scatter plot of p values from time-null vs IAAFT-null"
+  ) +
+  theme_minimal()
+```
+
+Looking into my 10k example output
+```{r}
+example_output$sig_p_time <- example_output$p_time < 0.05
+example_output$sig_p_spec <- example_output$p_spec < 0.05
+example_output$sig_p_spec_fdr <- example_output$p_spec_fdr < 0.1
+example_output$sig_p_time_fdr <- example_output$p_time_fdr < 0.1
+
+print("OTU pairs with uncorrected p < 0.05 from time shuffle null: ") 
+sum(example_output$sig_p_time)
+print("OTU pairs with p < 0.05 from time shuffle null AFTER BH-FDR correction: ") 
+sum(example_output$p_time_reject == "True")
+print("OTU pairs with uncorrected p < 0.05 from iaaft null: ") 
+sum(example_output$sig_p_spec)
+print("OTU pairs with p < 0.05 from iaaft null AFTER BH-FDR correction: ") 
+sum(example_output$p_spec_reject == "True")
+print("IF we raise the BH-FDR cutoff to 0.1: ") 
+sum(example_output$sig_p_spec_fdr)
+sum(example_output$sig_p_time_fdr)
+
+
+```
+## Merge with taxonomy file
+```{r}
+SILVA_taxonomy <- read_tsv(file = "/Users/laurielyon/Projects/mibi_longitude/data/qiime/taxonomy.tsv")
+output_taxonomy_j <- left_join(example_output, SILVA_taxonomy, by = c("OTU_j" = "Feature ID"))
+
+
+```
+
+```{r}
+inner_join_merged_df %>% 
+  ggplot(aes(x = p.value, y = pseudo_pval_shuffled)) +
+    geom_point()
+```
+
+
+
